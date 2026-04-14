@@ -124,50 +124,6 @@ export const getUsers = async (req, res) => {
 //   }
 // };
 
-export const getTelegramId = async (req, res) => {
-  const initData = req.body.initData;
-  const img = req.body.img;
-  const name = req.body.name;
-
-  console.log(req.body.initData);
-  const botToken = "8148592903:AAGUHTCbv6QAYg4jhQ-3KwE5ZCV0gIfMfDg"; // Укажите токен вашего бота
-
-  if (!initData || !botToken) {
-    return res
-      .status(400)
-      .json({ error: "initData или токен не предоставлены" });
-  }
-
-  try {
-    let existingUser = await User.findOne({ telegramId: initData });
-
-    if (existingUser) {
-      return res.json({
-        status: "Пользователь с таким Telegram ID уже существует.",
-        user: existingUser,
-      });
-    }
-
-    // Создаем нового пользователя, если не найден
-    const newUser = new User({
-      telegramId: initData,
-      avatar: img,
-      name,
-    });
-
-    await newUser.save();
-
-    return res.json({
-      status: "Новый пользователь создан.",
-      user: newUser,
-      telegramId: newUser.telegramId,
-    });
-  } catch (error) {
-    console.error("Ошибка при обработке данных:", error);
-    return res.status(500).json({ error: "Ошибка при обработке initData." });
-  }
-};
-
 export const getSubscribe = async (req, res) => {
   try {
     const { type, val } = req.body;

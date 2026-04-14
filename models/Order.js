@@ -160,6 +160,7 @@ const orderSchema = new mongoose.Schema(
 
     // Подтверждение доставки
     proofOfDelivery: podSchema,
+    receiptToken: { type: String },
 
     // История координат (сбрасывается из Redis)
     trackHistory: [

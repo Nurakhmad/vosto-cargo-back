@@ -6,6 +6,9 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+import crypto from "crypto";
+import qrcode from "qrcode";
+
 // Инициализация S3 (дублирование из UserController, в идеале вынести в отдельный сервис)
 const bucketName = process.env.BUCKET_NAME;
 const bucketRegion = process.env.BUCKET_REGION;
@@ -294,6 +297,62 @@ export const uploadPoD = async (req, res) => {
         res.json({ message: "PoD uploaded successfully", order });
     } catch (error) {
         console.error("PoD upload error:", error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// 8. Генерация QR кода для подтверждения получения
+export const generateReceiptQR = async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const order = await Order.findById(orderId);
+        if (!order) return res.status(404).json({ error: "Order not found" });
+
+        // Генерируем токен, если его еще нет
+        if (!order.receiptToken) {
+            order.receiptToken = crypto.randomBytes(16).toString("hex");
+            await order.save();
+        }
+
+        // Данные для QR кода (например, URL для сканирования или JSON)
+        // В реальном приложении это может быть URL фронтенда, который отправляет запрос на confirmReceipt
+        const qrData = JSON.stringify({ orderId: order._id, token: order.receiptToken });
+        
+        const qrCodeImage = await qrcode.toDataURL(qrData);
+
+        res.json({ qrCode: qrCodeImage, token: order.receiptToken });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// 9. Подтверждение получения по QR коду
+export const confirmReceipt = async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { token } = req.body;
+
+        const order = await Order.findById(orderId);
+        if (!order) return res.status(404).json({ error: "Order not found" });
+
+        if (!order.receiptToken || order.receiptToken !== token) {
+            return res.status(400).json({ error: "Invalid or missing receipt token" });
+        }
+
+        // Подтверждаем доставку
+        if (order.status !== 'DELIVERED') {
+            order.status = 'DELIVERED';
+        }
+        
+        // Можно также отметить, что заказчик подтвердил
+        if (!order.proofOfDelivery) {
+            order.proofOfDelivery = {};
+        }
+        order.proofOfDelivery.verifiedByCustomer = true;
+
+        await order.save();
+        res.json({ message: "Receipt confirmed successfully", order });
+    } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };

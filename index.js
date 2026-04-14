@@ -105,7 +105,6 @@ const upload = multer({ storage });
 app.post("/register", UserController.register);
 app.post("/login", UserController.login);
 app.post("/subscribe", UserController.getSubscribe);
-app.post("/getTelegramId", UserController.getTelegramId);
 app.post("/save-location", UserController.saveLocation);
 
 app.get("/getUserById/:id", UserController.getUser);
@@ -163,6 +162,8 @@ app.patch("/api/v1/orders/:orderId/assign", OrderController.assignDriver);
 // --- Driver Workflow ---
 app.patch("/api/v1/driver/orders/:orderId/status", OrderController.updateDriverStatus);
 app.post("/api/v1/driver/orders/:orderId/pod", upload.array("photos", 5), OrderController.uploadPoD);
+app.get("/api/v1/orders/:orderId/receipt-qr", OrderController.generateReceiptQR);
+app.post("/api/v1/orders/:orderId/confirm-receipt", OrderController.confirmReceipt);
 
 // --- AI Module ---
 app.post("/api/v1/ai/parse", AIController.parseOrder);
