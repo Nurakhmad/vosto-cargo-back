@@ -31,7 +31,7 @@ const subscriptionSchema = new mongoose.Schema(
       default: "inactive",
     },
   },
-  { _id: false }
+  { _id: false },
 );
 
 // --- Новые профили для ролей ---
@@ -49,7 +49,7 @@ const driverProfileSchema = new mongoose.Schema(
       default: "OFFLINE",
     },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const logisticianProfileSchema = new mongoose.Schema(
@@ -58,33 +58,34 @@ const logisticianProfileSchema = new mongoose.Schema(
     managedFleets: [{ type: mongoose.Schema.Types.ObjectId, ref: "Vehicle" }],
     drivers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], // Нанятые водители
   },
-  { _id: false }
+  { _id: false },
 );
 
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
-    
+
     // Обновленная ролевая модель
-    role: { 
-      type: String, 
+    role: {
+      type: String,
       enum: ["CUSTOMER", "LOGISTICIAN", "DRIVER", "ADMIN", ""], // "" для совместимости со старыми юзерами
-      default: "" 
+      default: "",
     },
 
     email: { type: String, unique: true, required: true },
     password: { type: String, required: true },
+    telegramId: { type: String },
     avatar: { type: String, default: "" },
     rating: { type: Number, default: 5.0 },
     language: { type: String, default: "ru" },
-    
+
     // Геолокация (общая для всех, но критична для водителя)
     location: {
       latitude: Number,
       longitude: Number,
       updatedAt: Date,
       heading: Number, // Направление движения (градусы)
-      speed: Number,   // Скорость (км/ч)
+      speed: Number, // Скорость (км/ч)
     },
 
     ratingHistory: [
@@ -97,7 +98,7 @@ const userSchema = new mongoose.Schema(
     ],
 
     company: { type: companySchema, default: () => ({}) },
-    
+
     // Специфичные профили
     driverProfile: { type: driverProfileSchema, default: () => ({}) },
     logisticianProfile: { type: logisticianProfileSchema, default: () => ({}) },
@@ -110,7 +111,7 @@ const userSchema = new mongoose.Schema(
     // Новая подписка
     subscription: { type: subscriptionSchema, default: () => ({}) },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // Опционально: виртуал, чтобы isPremium синхронизировался по подписке

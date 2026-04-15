@@ -32,16 +32,34 @@ const s3 = new S3Client({
 
 export const register = async (req, res) => {
   try {
+    const { email, name, password, role } = req.body;
+
+    if (!email || !name || !password || !role) {
+      return res
+        .status(400)
+        .json({ message: "name, email, password и role обязательны" });
+    }
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res
+        .status(409)
+        .json({ message: "Пользователь с таким email уже существует" });
+    }
+
     // Хэширование пароля
     const salt = await bcrypt.genSalt(10); // Генерация соли
-    const hashedPassword = await bcrypt.hash(req.body.password, salt); // Хэширование пароля
+    const hashedPassword = await bcrypt.hash(password, salt); // Хэширование пароля
 
     // Создание нового пользователя
     const newUser = new User({
-      email: req.body.email,
-      name: req.body.name,
+      email,
+      name,
       password: hashedPassword, // Используем хэшированный пароль
-      role: req.body.role,
+      role,
+      // В базе есть старый unique-index telegramId_1. Для email-регистрации
+      // задаем стабильное уникальное значение, чтобы Mongo не считал его null.
+      telegramId: req.body.telegramId || `email:${email}`,
     });
 
     // Сохранение пользователя в базе данных
@@ -53,7 +71,8 @@ export const register = async (req, res) => {
     });
 
     // Ответ клиенту
-    res.json({ token, ...savedUser._doc });
+    const { password: _password, ...userData } = savedUser._doc;
+    res.json({ token, ...userData });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Не удалось зарегистрироваться" });
@@ -72,7 +91,7 @@ export const login = async (req, res) => {
     // Проверка пароля
     const isPasswordValid = await bcrypt.compare(
       req.body.password,
-      user.password
+      user.password,
     );
 
     if (!isPasswordValid) {
@@ -160,12 +179,14 @@ export const setRole = async (req, res) => {
   }
 
   try {
-    const user = await User.findById(userId);
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { role },
+      { new: true, runValidators: false },
+    );
     if (!user) {
       return res.status(404).json({ error: "Пользователь не найден" });
     }
-    user.role = role;
-    await user.save();
     return res.json({ status: "Роль обновлена", user });
   } catch (error) {
     console.error("Ошибка при обновлении роли:", error);
@@ -342,13 +363,14 @@ export const saveTheme = async (req, res) => {
   }
 
   try {
-    const user = await User.findById(userId);
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { theme },
+      { new: true, runValidators: false },
+    );
     if (!user) {
       return res.status(404).json({ message: "Пользователь не найден" });
     }
-
-    user.theme = theme;
-    await user.save();
 
     res.json({ message: "Тема успешно сохранена", user });
   } catch (error) {
@@ -365,13 +387,14 @@ export const saveLanguage = async (req, res) => {
   }
 
   try {
-    const user = await User.findById(userId);
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { language },
+      { new: true, runValidators: false },
+    );
     if (!user) {
       return res.status(404).json({ message: "Пользователь не найден" });
     }
-
-    user.language = language;
-    await user.save();
 
     res.json({ message: "Язык успешно сохранён", user });
   } catch (error) {
@@ -425,17 +448,22 @@ export const saveLocation = async (req, res) => {
   }
 
   try {
-    const user = await User.findById(userId);
-    if (!user)
-      return res.status(404).json({ message: "Пользователь не найден" });
-
-    user.location = {
+    const nextLocation = {
       latitude: location.latitude,
       longitude: location.longitude,
       updatedAt: new Date(),
+      heading: location.heading,
+      speed: location.speed,
     };
 
-    await user.save();
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { location: nextLocation },
+      { new: true, runValidators: false },
+    );
+    if (!user)
+      return res.status(404).json({ message: "Пользователь не найден" });
+
     res.json({
       message: "Координаты успешно сохранены",
       location: user.location,
