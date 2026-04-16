@@ -177,6 +177,11 @@ export const acceptBid = async (req, res) => {
     });
 
     await order.save();
+    await order.populate('customer', 'name rating');
+    await order.populate('executor.vehicle');
+    await order.populate('executor.driver', 'name phone');
+    await order.populate('executor.logistician', 'name phone');
+    await order.populate('bids.logistician', 'name rating');
     res.json(order);
   } catch (error) {
     res.status(500).json({ error: error.message });

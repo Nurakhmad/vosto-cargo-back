@@ -1,6 +1,9 @@
 import Vehicle from "../models/Vehicle.js";
 import User from "../models/User.js";
 
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const normalizePhone = (phone = "") => phone.replace(/[^\d+]/g, "").replace(/(?!^)\+/g, "");
+
 // Добавить машину в парк
 export const addVehicle = async (req, res) => {
   try {
@@ -32,7 +35,7 @@ export const addVehicle = async (req, res) => {
 export const getMyFleet = async (req, res) => {
     try {
         const { ownerId } = req.query;
-        const vehicles = await Vehicle.find({ owner: ownerId }).populate('currentDriver', 'name phone');
+        const vehicles = await Vehicle.find({ owner: ownerId }).populate('currentDriver', 'name phone email');
         res.json(vehicles);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -61,19 +64,27 @@ export const assignDriverToVehicle = async (req, res) => {
     }
 };
 
-// Добавить водителя в штат по Telegram ID
+// Добавить водителя в штат по телефону. Email/Telegram ID оставлены для старых аккаунтов.
 export const addDriverByTelegramId = async (req, res) => {
     try {
-        const { logisticianId, telegramId } = req.body;
+        const { logisticianId, phone, email, telegramId, driverIdentifier } = req.body;
+        const identifier = (phone || email || driverIdentifier || telegramId || "").trim();
+        const normalizedPhone = normalizePhone(identifier);
 
-        if (!logisticianId || !telegramId) {
-            return res.status(400).json({ error: "Logistician ID and Telegram ID are required" });
+        if (!logisticianId || !identifier) {
+            return res.status(400).json({ error: "Logistician ID and driver phone are required" });
         }
 
         // 1. Ищем водителя
-        const driver = await User.findOne({ telegramId });
+        const driver = await User.findOne({
+            $or: [
+                { phone: normalizedPhone },
+                { email: { $regex: `^${escapeRegExp(identifier)}$`, $options: "i" } },
+                { telegramId: identifier }
+            ]
+        });
         if (!driver) {
-            return res.status(404).json({ error: "Driver not found with this Telegram ID" });
+            return res.status(404).json({ error: "Driver not found with this phone" });
         }
 
         // 2. Проверяем роль
@@ -190,7 +201,7 @@ export const getMyDrivers = async (req, res) => {
         // 3. Находим самих водителей по списку ID
         const drivers = await User.find({
             '_id': { $in: driverIds }
-        }).select('name telegramId avatar driverProfile role'); // Выбираем только нужные поля
+        }).select('name phone email telegramId avatar driverProfile role'); // Выбираем только нужные поля
 
         // 4. Генерируем Signed URL для аватаров, если нужно
         const driversWithAvatars = await Promise.all(drivers.map(async (driver) => {

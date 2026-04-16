@@ -30,21 +30,32 @@ const s3 = new S3Client({
   region: bucketRegion,
 });
 
+const normalizePhone = (phone = "") => phone.replace(/[^\d+]/g, "").replace(/(?!^)\+/g, "");
+
 export const register = async (req, res) => {
   try {
-    const { email, name, password, role } = req.body;
+    const { name, password, role } = req.body;
+    const email = req.body.email?.trim().toLowerCase();
+    const phone = normalizePhone(req.body.phone);
 
     if (!email || !name || !password || !role) {
-      return res
-        .status(400)
-        .json({ message: "name, email, password и role обязательны" });
+      return res.status(400).json({ message: "name, email, password и role обязательны" });
+    }
+
+    if (role === "DRIVER" && !phone) {
+      return res.status(400).json({ message: "Телефон обязателен для водителя" });
     }
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res
-        .status(409)
-        .json({ message: "Пользователь с таким email уже существует" });
+      return res.status(409).json({ message: "Пользователь с таким email уже существует" });
+    }
+
+    if (phone) {
+      const existingPhone = await User.findOne({ phone });
+      if (existingPhone) {
+        return res.status(409).json({ message: "Пользователь с таким телефоном уже существует" });
+      }
     }
 
     // Хэширование пароля
@@ -56,10 +67,7 @@ export const register = async (req, res) => {
       email,
       name,
       password: hashedPassword, // Используем хэшированный пароль
-      role,
-      // В базе есть старый unique-index telegramId_1. Для email-регистрации
-      // задаем стабильное уникальное значение, чтобы Mongo не считал его null.
-      telegramId: req.body.telegramId || `email:${email}`,
+      role: req.body.role,
     });
 
     // Сохранение пользователя в базе данных
@@ -179,11 +187,7 @@ export const setRole = async (req, res) => {
   }
 
   try {
-    const user = await User.findByIdAndUpdate(
-      userId,
-      { role },
-      { new: true, runValidators: false },
-    );
+    const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ error: "Пользователь не найден" });
     }
@@ -363,11 +367,7 @@ export const saveTheme = async (req, res) => {
   }
 
   try {
-    const user = await User.findByIdAndUpdate(
-      userId,
-      { theme },
-      { new: true, runValidators: false },
-    );
+    const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ message: "Пользователь не найден" });
     }
@@ -387,11 +387,7 @@ export const saveLanguage = async (req, res) => {
   }
 
   try {
-    const user = await User.findByIdAndUpdate(
-      userId,
-      { language },
-      { new: true, runValidators: false },
-    );
+    const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ message: "Пользователь не найден" });
     }
@@ -443,7 +439,7 @@ export const uploadCompanyPhoto = async (req, res) => {
 export const saveLocation = async (req, res) => {
   const { userId, location } = req.body;
 
-  if (!userId || !location || !location.latitude || !location.longitude) {
+  if (!userId || !location || location.latitude == null || location.longitude == null) {
     return res.status(400).json({ message: "userId и координаты обязательны" });
   }
 
@@ -456,14 +452,7 @@ export const saveLocation = async (req, res) => {
       speed: location.speed,
     };
 
-    const user = await User.findByIdAndUpdate(
-      userId,
-      { location: nextLocation },
-      { new: true, runValidators: false },
-    );
-    if (!user)
-      return res.status(404).json({ message: "Пользователь не найден" });
-
+    await user.save();
     res.json({
       message: "Координаты успешно сохранены",
       location: user.location,

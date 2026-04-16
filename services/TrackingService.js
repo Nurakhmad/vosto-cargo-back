@@ -1,5 +1,6 @@
 import { createClient } from 'redis';
 import { Order } from '../models/Order.js';
+import User from '../models/User.js';
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -8,14 +9,28 @@ let redisClient;
 
 export const initRedis = async () => {
     if (!redisClient) {
+        let redisErrorLogged = false;
         redisClient = createClient({ 
-            url: process.env.REDIS_URL || 'redis://localhost:6379' 
+            url: process.env.REDIS_URL || 'redis://localhost:6379',
+            socket: {
+                reconnectStrategy: false
+            }
         });
         
-        redisClient.on('error', (err) => console.log('Redis Client Error', err));
+        redisClient.on('error', (err) => {
+            if (!redisErrorLogged) {
+                console.log('Redis unavailable, using Mongo GPS fallback:', err.message);
+                redisErrorLogged = true;
+            }
+        });
         
-        await redisClient.connect();
-        console.log('Redis connected');
+        try {
+            await redisClient.connect();
+            console.log('Redis connected');
+        } catch (error) {
+            redisClient = null;
+            console.log('Redis unavailable, using Mongo GPS fallback');
+        }
     }
     return redisClient;
 };
@@ -23,28 +38,50 @@ export const initRedis = async () => {
 export const getRedisClient = () => redisClient;
 
 export const handleLocationUpdate = async (socket, data) => {
-    if (!redisClient) return;
-
     const { driverId, lat, lng, orderId } = data;
     const timestamp = Date.now();
+    const point = { lat, lng, timestamp, orderId };
 
     // 1. Pub/Sub: Отправляем обновление подписчикам (логисту/клиенту)
     // Клиент на фронте слушает комнату `track:${orderId}`
-    socket.to(`track:${orderId}`).emit('driverLocation', { lat, lng, driverId });
+    if (orderId) {
+        socket.to(`track:${orderId}`).emit('driverLocation', { ...point, driverId });
+    }
 
-    // 2. Redis Hot Storage: Сохраняем текущую позицию (TTL 5 минут, чтобы не мусорить)
-    await redisClient.set(
-        `driver:${driverId}:current`, 
-        JSON.stringify({ lat, lng, timestamp }), 
-        { EX: 300 }
+    await User.findByIdAndUpdate(
+        driverId,
+        {
+            location: {
+                latitude: lat,
+                longitude: lng,
+                updatedAt: new Date(timestamp),
+            }
+        },
+        { runValidators: false }
     );
 
-    // 3. Redis Cold Buffer: Добавляем в список для последующего сохранения в БД
-    // Используем RPUSH для добавления в конец очереди
-    await redisClient.rPush(
-        `driver:${driverId}:history`, 
-        JSON.stringify({ lat, lng, timestamp, orderId })
-    );
+    if (redisClient?.isOpen) {
+        // 2. Redis Hot Storage: Сохраняем текущую позицию (TTL 5 минут, чтобы не мусорить)
+        await redisClient.set(
+            `driver:${driverId}:current`, 
+            JSON.stringify({ lat, lng, timestamp }), 
+            { EX: 300 }
+        );
+
+        // 3. Redis Cold Buffer: Добавляем в список для последующего сохранения в БД
+        // Используем RPUSH для добавления в конец очереди
+        await redisClient.rPush(
+            `driver:${driverId}:history`, 
+            JSON.stringify(point)
+        );
+        return;
+    }
+
+    if (orderId) {
+        await Order.findByIdAndUpdate(orderId, {
+            $push: { trackHistory: point }
+        });
+    }
 };
 
 // CRON JOB (запускать раз в минуту)

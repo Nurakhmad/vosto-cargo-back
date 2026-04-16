@@ -74,6 +74,7 @@ const userSchema = new mongoose.Schema(
 
     email: { type: String, unique: true, required: true },
     password: { type: String, required: true },
+    phone: { type: String, unique: true, sparse: true, trim: true },
     telegramId: { type: String },
     avatar: { type: String, default: "" },
     rating: { type: Number, default: 5.0 },
