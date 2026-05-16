@@ -23,12 +23,130 @@ const s3 = new S3Client({
   region: bucketRegion,
 });
 
+const cleanString = (value) => {
+  if (typeof value !== "string") return "";
+  return value.trim();
+};
+
+const toNumber = (value) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(String(value).replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const getPointValue = (point, key) => {
+  if (!point || typeof point !== "object") return "";
+  return cleanString(point[key]);
+};
+
+const normalizeLocationPoint = (point, fallbackValue) => {
+  const fallback = cleanString(fallbackValue);
+
+  if (typeof point === "string") {
+    const label = cleanString(point);
+    return label ? { city: label, address: label } : undefined;
+  }
+
+  const address =
+    getPointValue(point, "address") ||
+    getPointValue(point, "displayName") ||
+    getPointValue(point, "name") ||
+    getPointValue(point, "label") ||
+    fallback;
+
+  const city =
+    getPointValue(point, "city") ||
+    getPointValue(point, "town") ||
+    getPointValue(point, "village") ||
+    address;
+
+  const lat = toNumber(point?.coordinates?.lat ?? point?.lat ?? point?.latitude);
+  const lng = toNumber(
+    point?.coordinates?.lng ??
+    point?.coordinates?.lon ??
+    point?.lng ??
+    point?.lon ??
+    point?.longitude
+  );
+
+  if (!address && !city && (lat === undefined || lng === undefined)) {
+    return undefined;
+  }
+
+  return {
+    address: address || city,
+    city: city || address,
+    ...(lat !== undefined && lng !== undefined ? { coordinates: { lat, lng } } : {}),
+    ...(point?.plannedTime ? { plannedTime: point.plannedTime } : {}),
+    ...(point?.contactPerson ? { contactPerson: point.contactPerson } : {}),
+  };
+};
+
+const normalizeRoute = (route = {}, body = {}) => {
+  const from = normalizeLocationPoint(route.from, body.from || body.otkuda);
+  const to = normalizeLocationPoint(route.to, body.to || body.kuda);
+  const waypoints = Array.isArray(route.waypoints)
+    ? route.waypoints.map((point) => normalizeLocationPoint(point)).filter(Boolean)
+    : [];
+
+  return {
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
+    ...(waypoints.length ? { waypoints } : {}),
+  };
+};
+
+const normalizeCargo = (cargoInput = {}, body = {}) => {
+  if (typeof cargoInput === "string") {
+    return { description: cleanString(cargoInput) };
+  }
+
+  const legacyCargo = body.cargo && typeof body.cargo === "object" ? body.cargo : {};
+  const description =
+    getPointValue(cargoInput, "description") ||
+    getPointValue(cargoInput, "cargoName") ||
+    getPointValue(cargoInput, "name") ||
+    getPointValue(cargoInput, "cargo") ||
+    getPointValue(legacyCargo, "description") ||
+    getPointValue(legacyCargo, "cargoName") ||
+    getPointValue(legacyCargo, "name") ||
+    getPointValue(legacyCargo, "cargo") ||
+    cleanString(body.cargo);
+
+  return {
+    ...(description ? { description } : {}),
+    ...(toNumber(cargoInput.weight ?? cargoInput.weightKg ?? legacyCargo.weight ?? body.weight) !== undefined
+      ? { weight: toNumber(cargoInput.weight ?? cargoInput.weightKg ?? legacyCargo.weight ?? body.weight) }
+      : {}),
+    ...(toNumber(cargoInput.volume ?? cargoInput.volumeM3 ?? legacyCargo.volume ?? body.volume) !== undefined
+      ? { volume: toNumber(cargoInput.volume ?? cargoInput.volumeM3 ?? legacyCargo.volume ?? body.volume) }
+      : {}),
+    ...(toNumber(cargoInput.pallets) !== undefined ? { pallets: toNumber(cargoInput.pallets) } : {}),
+    requiresTempControl: Boolean(cargoInput.requiresTempControl),
+    isFragile: Boolean(cargoInput.isFragile),
+    requiresLoader: Boolean(cargoInput.requiresLoader ?? cargoInput.loadersRequired),
+  };
+};
+
+const openBiddingStatuses = ["PUBLISHED", "NEGOTIATION"];
+
+const getUnclaimedOrderFilter = () => ({
+  status: { $in: openBiddingStatuses },
+  "bids.status": { $ne: "ACCEPTED" },
+  $or: [
+    { "executor.logistician": { $exists: false } },
+    { "executor.logistician": null },
+  ],
+});
+
 // --- Bidding Engine & Order Management ---
 
 // 1. Создание заказа (Заказчик)
 export const createOrder = async (req, res) => {
   try {
-    const { cargo, route, pricing, aiAnalysis, customerId } = req.body;
+    const { pricing, aiAnalysis, customerId } = req.body;
+    const route = normalizeRoute(req.body.route, req.body);
+    const cargoDetails = normalizeCargo(req.body.cargoDetails ?? req.body.cargo, req.body);
     
     // TODO: Получать userId из токена (req.user._id)
     // Пока берем из body для теста или fallback
@@ -36,11 +154,12 @@ export const createOrder = async (req, res) => {
 
     const newOrder = new Order({
       customer: finalCustomerId,
-      cargoDetails: cargo, // Map 'cargo' from body to 'cargoDetails'
+      cargoDetails,
       route,
       pricing: {
         customerOffer: pricing?.customerOffer || 0,
-        currency: "RUB"
+        currency: pricing?.currency || "RUB",
+        paymentMethod: pricing?.paymentMethod || "CASH",
       },
       aiAnalysis,
       status: "PUBLISHED" // Сразу публикуем для торгов
@@ -67,10 +186,16 @@ export const getOrders = async (req, res) => {
     }
     // Если логист — видит доступные для торгов или свои принятые
     else if (role === 'LOGISTICIAN') {
+        const logisticianOrders = [
+            getUnclaimedOrderFilter(),
+        ];
+
+        if (userId) {
+            logisticianOrders.push({ 'executor.logistician': userId });
+        }
+
         filter.$or = [
-            { status: 'PUBLISHED' },
-            { 'bids.logistician': userId },
-            { 'executor.logistician': userId }
+            ...logisticianOrders
         ];
     }
     // Если водитель — видит назначенные ему (через машину)
@@ -93,6 +218,8 @@ export const getOrders = async (req, res) => {
     const orders = await Order.find(filter)
       .populate('customer', 'name rating')
       .populate('executor.vehicle')
+      .populate('executor.driver', 'name phone location')
+      .populate('executor.logistician', 'name phone')
       .populate('bids.logistician', 'name rating') // Добавлено: подтягиваем инфо о логисте в ставках
       .sort({ createdAt: -1 });
       
@@ -109,7 +236,7 @@ export const getOrderById = async (req, res) => {
         const order = await Order.findById(id)
             .populate('customer', 'name phone rating')
             .populate('executor.vehicle')
-            .populate('executor.driver', 'name phone')
+            .populate('executor.driver', 'name phone location')
             .populate('executor.logistician', 'name phone')
             .populate('bids.logistician', 'name rating'); // Добавлено: инфо о логисте в ставках
 
@@ -182,6 +309,41 @@ export const acceptBid = async (req, res) => {
     await order.populate('executor.driver', 'name phone');
     await order.populate('executor.logistician', 'name phone');
     await order.populate('bids.logistician', 'name rating');
+    res.json(order);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// 4.1. Контрпредложение по ставке (Заказчик)
+export const counterBid = async (req, res) => {
+  try {
+    const { orderId, bidId } = req.params;
+    const { amount, comment } = req.body;
+
+    const nextAmount = toNumber(amount);
+    if (nextAmount === undefined) {
+      return res.status(400).json({ error: "Amount is required" });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ error: "Order not found" });
+
+    const bid = order.bids.id(bidId);
+    if (!bid) return res.status(404).json({ error: "Bid not found" });
+
+    bid.amount = nextAmount;
+    bid.comment = cleanString(comment);
+    bid.status = "COUNTER_OFFER";
+    order.status = "NEGOTIATION";
+
+    await order.save();
+    await order.populate('customer', 'name rating');
+    await order.populate('executor.vehicle');
+    await order.populate('executor.driver', 'name phone');
+    await order.populate('executor.logistician', 'name phone');
+    await order.populate('bids.logistician', 'name rating');
+
     res.json(order);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -377,7 +539,18 @@ export const getAllOrders = async (req, res) => {
 export const updateOrder = async (req, res) => {
     // Generic update implementation
     const { id } = req.params;
-    const updated = await Order.findByIdAndUpdate(id, req.body, { new: true });
+    const update = { ...req.body };
+
+    if (req.body.route) {
+      update.route = normalizeRoute(req.body.route, req.body);
+    }
+
+    if (req.body.cargoDetails || req.body.cargo) {
+      update.cargoDetails = normalizeCargo(req.body.cargoDetails ?? req.body.cargo, req.body);
+      delete update.cargo;
+    }
+
+    const updated = await Order.findByIdAndUpdate(id, update, { new: true });
     res.json(updated);
 };
 

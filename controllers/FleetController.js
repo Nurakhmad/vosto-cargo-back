@@ -166,8 +166,9 @@ export const getFleetLocations = async (req, res) => {
 
         const drivers = await User.find({
             '_id': { $in: driverIds },
-            'location.latitude': { $exists: true } // Только те, у кого есть координаты
-        }).select('name location driverProfile');
+        })
+          .select('name phone email location driverProfile role')
+          .populate('driverProfile.currentVehicle', 'brand plateNumber status');
 
         res.json(drivers);
     } catch (error) {

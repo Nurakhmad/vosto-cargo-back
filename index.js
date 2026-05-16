@@ -149,6 +149,7 @@ app.post("/orders/restore", OrderController.restoreOrder);
 app.get("/api/v1/orders/:id", OrderController.getOrderById);
 app.post("/api/v1/orders/:orderId/bids", OrderController.placeBid);
 app.post("/api/v1/orders/:orderId/bids/:bidId/accept", OrderController.acceptBid);
+app.post("/api/v1/orders/:orderId/bids/:bidId/counter", OrderController.counterBid);
 
 // --- Fleet Management ---
 app.get("/api/v1/fleet/locations", FleetController.getFleetLocations);

@@ -2,6 +2,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 
 import User from "../models/User.js"; // Убедитесь, что путь правильный
+import { Order } from "../models/Order.js";
 import sharp from "sharp";
 import {
   S3Client,
@@ -31,6 +32,27 @@ const s3 = new S3Client({
 });
 
 const normalizePhone = (phone = "") => phone.replace(/[^\d+]/g, "").replace(/(?!^)\+/g, "");
+
+const toPublicUser = (user) => {
+  const data = user?.toObject?.() || user?._doc || user || {};
+  const { password, ...publicUser } = data;
+  return publicUser;
+};
+
+const companyFields = new Set([
+  "name",
+  "inn",
+  "ogrn",
+  "profile",
+  "country",
+  "city",
+  "email",
+  "website",
+  "manager",
+  "phone",
+  "jobTitle",
+  "department",
+]);
 
 export const register = async (req, res) => {
   try {
@@ -68,6 +90,7 @@ export const register = async (req, res) => {
       name,
       password: hashedPassword, // Используем хэшированный пароль
       role: req.body.role,
+      ...(phone ? { phone } : {}),
     });
 
     // Сохранение пользователя в базе данных
@@ -265,7 +288,18 @@ export const uploadPhoto = async (req, res) => {
     user.avatar = imageName;
     await user.save();
 
-    res.json({ message: "Фото успешно загружено", user });
+    const avatarUrl = await getSignedUrl(
+      s3,
+      new GetObjectCommand({ Bucket: bucketName, Key: imageName }),
+      { expiresIn: 3600 }
+    );
+    res.json({
+      message: "Фото успешно загружено",
+      user: {
+        ...toPublicUser(user),
+        avatar: avatarUrl,
+      },
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Ошибка при загрузке фото" });
@@ -289,7 +323,7 @@ export const changeUserName = async (req, res) => {
     await user.save();
     return res
       .status(200)
-      .json({ message: "План тренировок успешно сохранен", user });
+      .json({ message: "Имя успешно сохранено", user: toPublicUser(user) });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: "Не удалось сохранить имя" });
@@ -308,15 +342,18 @@ export const updateCompany = async (req, res) => {
       return res.status(404).json({ error: "Пользователь не найден" });
     }
 
-    // companyData может содержать любые поля из [inn, ogrn, profile, country, city, email, website, manager, phone, jobTitle, department]
-    // Делаем частичное слияние
+    if (!user.company) user.company = {};
+
+    // companyData может содержать поля из companySchema.
     Object.keys(companyData).forEach((key) => {
-      // Если в теле есть какое-то поле, обновляем его у user.company
-      user.company[key] = companyData[key];
+      if (companyFields.has(key)) {
+        user.company[key] =
+          typeof companyData[key] === "string" ? companyData[key].trim() : companyData[key];
+      }
     });
 
     await user.save();
-    return res.json({ status: "Информация о компании обновлена", user });
+    return res.json({ status: "Информация о компании обновлена", user: toPublicUser(user) });
   } catch (error) {
     console.error("Ошибка при обновлении информации о компании:", error);
     return res
@@ -372,7 +409,10 @@ export const saveTheme = async (req, res) => {
       return res.status(404).json({ message: "Пользователь не найден" });
     }
 
-    res.json({ message: "Тема успешно сохранена", user });
+    user.theme = theme;
+    await user.save();
+
+    res.json({ message: "Тема успешно сохранена", user: toPublicUser(user) });
   } catch (error) {
     console.error("Ошибка при сохранении темы:", error);
     res.status(500).json({ message: "Ошибка сервера при сохранении темы" });
@@ -392,7 +432,10 @@ export const saveLanguage = async (req, res) => {
       return res.status(404).json({ message: "Пользователь не найден" });
     }
 
-    res.json({ message: "Язык успешно сохранён", user });
+    user.language = language;
+    await user.save();
+
+    res.json({ message: "Язык успешно сохранён", user: toPublicUser(user) });
   } catch (error) {
     console.error("Ошибка при сохранении языка:", error);
     res.status(500).json({ message: "Ошибка сервера при сохранении языка" });
@@ -437,13 +480,18 @@ export const uploadCompanyPhoto = async (req, res) => {
 };
 
 export const saveLocation = async (req, res) => {
-  const { userId, location } = req.body;
+  const { userId, location, orderId } = req.body;
 
   if (!userId || !location || location.latitude == null || location.longitude == null) {
     return res.status(400).json({ message: "userId и координаты обязательны" });
   }
 
   try {
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "Пользователь не найден" });
+    }
+
     const nextLocation = {
       latitude: location.latitude,
       longitude: location.longitude,
@@ -452,10 +500,30 @@ export const saveLocation = async (req, res) => {
       speed: location.speed,
     };
 
+    user.location = nextLocation;
     await user.save();
+
+    if (orderId && mongoose.Types.ObjectId.isValid(orderId)) {
+      try {
+        await Order.findByIdAndUpdate(orderId, {
+          $push: {
+            trackHistory: {
+              lat: nextLocation.latitude,
+              lng: nextLocation.longitude,
+              speed: nextLocation.speed,
+              timestamp: nextLocation.updatedAt,
+            },
+          },
+        });
+      } catch (trackError) {
+        console.error("Ошибка при сохранении истории координат:", trackError);
+      }
+    }
+
     res.json({
       message: "Координаты успешно сохранены",
       location: user.location,
+      user: toPublicUser(user),
     });
   } catch (error) {
     console.error("Ошибка при сохранении координат:", error);
